@@ -7,15 +7,20 @@ import { SplitToningPanel } from './components/Panels/SplitToningPanel';
 import { EffectsPanel } from './components/Panels/EffectsPanel';
 import { TransformPanel } from './components/Panels/TransformPanel';
 import { ExportPanel } from './components/Panels/ExportPanel';
+import { AIPanel } from './components/Panels/AIPanel';
 import { PresetList } from './components/Preset/PresetList';
+import { UploadScreen } from './components/UI/UploadScreen';
 import { useEditHistory } from './hooks/useEditHistory';
 import { usePresets } from './hooks/usePresets';
 import { DEFAULT_PARAMS, Preset, ExportSettings } from './types/editor';
 import { WebGLEngine } from './utils/webgl';
+import { readExif, PhotoMetadata, formatMetadataSummary } from './utils/exif';
 
 function App() {
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const [imageInfo, setImageInfo] = useState<{ name: string; width: number; height: number } | null>(null);
+  const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
+  const [metadata, setMetadata] = useState<PhotoMetadata | null>(null);
   const [showOriginal, setShowOriginal] = useState(false);
   const [exportSettings, setExportSettings] = useState<ExportSettings>({ format: 'jpeg', quality: 85, maxLongEdge: null });
   const engineRef = useRef<WebGLEngine | null>(null);
@@ -37,9 +42,19 @@ function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [undo, redo]);
 
-  const handleFileOpen = useCallback((files: FileList | File[]) => {
+  const handleFileOpen = useCallback(async (files: FileList | File[]) => {
     const file = files[0];
     if (!file) return;
+
+    // Read EXIF metadata from the original file
+    const exifData = await readExif(file);
+    setMetadata(exifData);
+
+    // Read file as data URL for AI analysis
+    const reader = new FileReader();
+    reader.onload = () => setImageDataUrl(reader.result as string);
+    reader.readAsDataURL(file);
+
     const img = new Image();
     img.onload = () => {
       const MAX_PREVIEW = 2048;
@@ -168,7 +183,7 @@ function App() {
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/jpeg,image/png,image/webp"
+            accept="image/jpeg,image/png,image/webp,image/heic"
             className="hidden"
             onChange={handleInputChange}
           />
@@ -226,16 +241,27 @@ function App() {
 
       {/* Main Area */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Canvas */}
-        <WebGLCanvas
-          image={image}
-          params={params}
-          showOriginal={showOriginal}
-          onEngineReady={engine => { engineRef.current = engine; }}
-        />
+        {/* Canvas or Upload Screen */}
+        {image ? (
+          <WebGLCanvas
+            image={image}
+            params={params}
+            showOriginal={showOriginal}
+            onEngineReady={engine => { engineRef.current = engine; }}
+          />
+        ) : (
+          <UploadScreen onFileSelect={handleFileOpen} />
+        )}
 
         {/* Right Panel */}
         <div className="w-64 bg-panel border-l border-border overflow-y-auto shrink-0">
+          <AIPanel
+            params={params}
+            onChange={setParams}
+            metadata={metadata}
+            imageDataUrl={imageDataUrl}
+            imageLoaded={!!image}
+          />
           <BasicAdjustments params={params} onChange={setParams} />
           <ColorAdjustments params={params} onChange={setParams} />
           <HSLPanel params={params} onChange={setParams} />
@@ -262,10 +288,16 @@ function App() {
 
       {/* Bottom Bar */}
       <div className="flex items-center justify-between px-3 py-1 bg-panel border-t border-border text-[10px] text-text-secondary shrink-0">
-        <div>
-          {imageInfo ? `${imageInfo.name} — ${imageInfo.width}×${imageInfo.height}` : '이미지를 드래그하거나 열기 버튼을 눌러주세요'}
+        <div className="flex items-center gap-2">
+          <span>{imageInfo ? `${imageInfo.name} — ${imageInfo.width}×${imageInfo.height}` : '이미지를 드래그하거나 열기 버튼을 눌러주세요'}</span>
+          {metadata && Object.keys(metadata).length > 0 && (
+            <>
+              <span className="text-border">|</span>
+              <span>{formatMetadataSummary(metadata)}</span>
+            </>
+          )}
         </div>
-        <div>PhotoLink — 100% 클라이언트 사이드 편집기</div>
+        <div>PhotoLink — AI 사진 편집기</div>
       </div>
     </div>
   );
