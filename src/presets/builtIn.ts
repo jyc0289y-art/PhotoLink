@@ -1,0 +1,113 @@
+import { Preset } from '../types/editor';
+
+export const builtInPresets: Preset[] = [
+  {
+    id: 'ch1_concrete_minimal',
+    name: 'Ch.1 콘크리트 미니멀',
+    description: '차가운 하이키 미니멀 — 건축/기하학 촬영용',
+    isBuiltIn: true,
+    params: {
+      colorTemp: 5500,
+      exposure: 0.5,
+      saturation: -35,
+      splitToning: { shadowHue: 220, shadowSat: 30, highlightHue: 0, highlightSat: 0, balance: 0 },
+      clarity: 15,
+    },
+  },
+  {
+    id: 'ch2_underground',
+    name: 'Ch.2 지하도시',
+    description: '뉴트럴 톤 + 그린 틴트 + 필름 그레인 — 지하 통로/소실점 촬영용',
+    isBuiltIn: true,
+    params: {
+      colorTemp: 5800,
+      exposure: 0,
+      saturation: -10,
+      splitToning: { shadowHue: 140, shadowSat: 20, highlightHue: 0, highlightSat: 0, balance: 0 },
+      clarity: 10,
+      grain: { amount: 30, size: 50 },
+    },
+  },
+  {
+    id: 'ch3_golden_hour',
+    name: 'Ch.3 골든아워',
+    description: '따뜻한 석양 톤 — 역광 실루엣/골든아워 촬영용',
+    isBuiltIn: true,
+    params: {
+      colorTemp: 6500,
+      exposure: 0,
+      saturation: 10,
+      splitToning: { shadowHue: 220, shadowSat: 25, highlightHue: 30, highlightSat: 35, balance: 20 },
+      clarity: 5,
+    },
+  },
+  {
+    id: 'ch4_cyberpunk',
+    name: 'Ch.4 사이버펑크 네온',
+    description: '시안/마젠타 스플릿토닝 — 네온 골목/비 오는 밤 촬영용',
+    isBuiltIn: true,
+    params: {
+      colorTemp: 4500,
+      exposure: -0.3,
+      saturation: 30,
+      splitToning: { shadowHue: 185, shadowSat: 50, highlightHue: 300, highlightSat: 40, balance: -10 },
+      clarity: 25,
+      hsl: {
+        red: { hue: 0, saturation: 0, luminance: 0 },
+        orange: { hue: 0, saturation: -20, luminance: 0 },
+        yellow: { hue: 0, saturation: -20, luminance: 0 },
+        green: { hue: 0, saturation: 0, luminance: 0 },
+        aqua: { hue: 0, saturation: 0, luminance: 0 },
+        blue: { hue: 0, saturation: 30, luminance: 0 },
+        purple: { hue: 0, saturation: 30, luminance: 0 },
+        magenta: { hue: 0, saturation: 0, luminance: 0 },
+      },
+    },
+  },
+  {
+    id: 'ch5_selective_neon',
+    name: 'Ch.5 선택적 네온',
+    description: '거의 모노크롬 + 네온만 컬러 유지 — 에스컬레이터/인간 리듬 촬영용',
+    isBuiltIn: true,
+    params: {
+      colorTemp: 5800,
+      exposure: -0.5,
+      saturation: -80,
+      clarity: 20,
+      selectiveColor: {
+        enabled: true,
+        preserveHueRanges: [
+          { center: 200, width: 60 },
+          { center: 280, width: 40 },
+        ],
+        desaturateStrength: 100,
+      },
+    },
+  },
+  {
+    id: 'ch6_diptych_cool',
+    name: 'Ch.6 디프틱 (쿨)',
+    description: '디프틱 좌측용 — Ch.1 톤 기반',
+    isBuiltIn: true,
+    params: {
+      colorTemp: 5500,
+      exposure: 0.5,
+      saturation: -35,
+      splitToning: { shadowHue: 220, shadowSat: 30, highlightHue: 0, highlightSat: 0, balance: 0 },
+      clarity: 15,
+    },
+  },
+  {
+    id: 'ch6_diptych_warm',
+    name: 'Ch.6 디프틱 (웜)',
+    description: '디프틱 우측용 — Ch.4 톤 기반',
+    isBuiltIn: true,
+    params: {
+      colorTemp: 4500,
+      exposure: -0.3,
+      saturation: 30,
+      splitToning: { shadowHue: 185, shadowSat: 50, highlightHue: 300, highlightSat: 40, balance: -10 },
+      clarity: 25,
+    },
+  },
+];
