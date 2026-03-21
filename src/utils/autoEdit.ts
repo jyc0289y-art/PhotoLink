@@ -107,7 +107,7 @@ ${shootingContext || '(EXIF 없음 — 시각적 분석에 의존)'}
       'anthropic-dangerous-direct-browser-access': 'true',
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6',
       max_tokens: 1500,
       messages: [
         {
@@ -133,6 +133,7 @@ ${shootingContext || '(EXIF 없음 — 시각적 분석에 의존)'}
 
   if (!response.ok) {
     const err = await response.text();
+    console.error('[PhotoLink AI] API error:', response.status, err);
     if (response.status === 401) throw new Error('API 키가 유효하지 않습니다.');
     if (response.status === 429) throw new Error('API 요청 한도 초과. 잠시 후 다시 시도해주세요.');
     throw new Error(`API 오류 (${response.status}): ${err}`);
@@ -141,7 +142,9 @@ ${shootingContext || '(EXIF 없음 — 시각적 분석에 의존)'}
   onProgress?.('편집 파라미터를 생성하고 있습니다...');
 
   const data = await response.json();
+  console.log('[PhotoLink AI] API response:', JSON.stringify(data).slice(0, 500));
   const text = data.content[0].text;
+  console.log('[PhotoLink AI] Extracted text:', text.slice(0, 300));
 
   // Extract JSON from response
   const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/) || text.match(/\{[\s\S]*"params"[\s\S]*\}/);
