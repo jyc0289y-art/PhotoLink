@@ -143,21 +143,6 @@ export class WebGLEngine {
     return { fbo, texture };
   }
 
-  private ensureFBOs(count: number) {
-    const gl = this.gl;
-    // Clean up old FBOs
-    for (const fbo of this.fbos) gl.deleteFramebuffer(fbo);
-    for (const tex of this.fboTextures) gl.deleteTexture(tex);
-    this.fbos = [];
-    this.fboTextures = [];
-
-    for (let i = 0; i < count; i++) {
-      const { fbo, texture } = this.createFBO();
-      this.fbos.push(fbo);
-      this.fboTextures.push(texture);
-    }
-  }
-
   private drawQuad(prog: ShaderProgram) {
     const gl = this.gl;
     gl.useProgram(prog.program);
@@ -196,14 +181,27 @@ export class WebGLEngine {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    // Pre-create FBOs for this image size
+    this.cleanupFBOs();
+    for (let i = 0; i < 3; i++) {
+      const { fbo, texture } = this.createFBO();
+      this.fbos.push(fbo);
+      this.fboTextures.push(texture);
+    }
+  }
+
+  private cleanupFBOs() {
+    const gl = this.gl;
+    for (const fbo of this.fbos) gl.deleteFramebuffer(fbo);
+    for (const tex of this.fboTextures) gl.deleteTexture(tex);
+    this.fbos = [];
+    this.fboTextures = [];
   }
 
   render(params: EditParams) {
-    if (!this.sourceTexture) return;
+    if (!this.sourceTexture || this.fbos.length < 3) return;
     const gl = this.gl;
-
-    // We need up to 3 FBOs for ping-pong + clarity
-    this.ensureFBOs(3);
 
     let currentTexture = this.sourceTexture;
     let fboIndex = 0;
@@ -371,9 +369,9 @@ export class WebGLEngine {
 
   destroy() {
     const gl = this.gl;
-    for (const fbo of this.fbos) gl.deleteFramebuffer(fbo);
-    for (const tex of this.fboTextures) gl.deleteTexture(tex);
+    this.cleanupFBOs();
     if (this.sourceTexture) gl.deleteTexture(this.sourceTexture);
+    this.sourceTexture = null;
     for (const prog of Object.values(this.programs)) {
       gl.deleteProgram(prog.program);
     }

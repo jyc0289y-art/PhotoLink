@@ -29,6 +29,10 @@ function App() {
   const { params, setParams, undo, redo, canUndo, canRedo, reset } = useEditHistory();
   const { allPresets, savePreset, deletePreset, exportPresets, importPresets } = usePresets();
 
+  const handleEngineReady = useCallback((engine: WebGLEngine) => {
+    engineRef.current = engine;
+  }, []);
+
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -240,17 +244,18 @@ function App() {
       </div>
 
       {/* Main Area */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* Canvas or Upload Screen */}
-        {image ? (
-          <WebGLCanvas
-            image={image}
-            params={params}
-            showOriginal={showOriginal}
-            onEngineReady={engine => { engineRef.current = engine; }}
-          />
-        ) : (
-          <UploadScreen onFileSelect={handleFileOpen} />
+      <div className="flex flex-1 overflow-hidden relative">
+        {/* Canvas (always mounted) + Upload Screen */}
+        <WebGLCanvas
+          image={image}
+          params={params}
+          showOriginal={showOriginal}
+          onEngineReady={handleEngineReady}
+        />
+        {!image && (
+          <div className="absolute inset-0 z-10">
+            <UploadScreen onFileSelect={handleFileOpen} />
+          </div>
         )}
 
         {/* Right Panel */}
