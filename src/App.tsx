@@ -1,18 +1,23 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { WebGLCanvas } from './components/Canvas/WebGLCanvas';
+import { CropOverlay } from './components/Canvas/CropOverlay';
 import { BasicAdjustments } from './components/Panels/BasicAdjustments';
 import { ColorAdjustments } from './components/Panels/ColorAdjustments';
 import { HSLPanel } from './components/Panels/HSLPanel';
 import { SplitToningPanel } from './components/Panels/SplitToningPanel';
 import { EffectsPanel } from './components/Panels/EffectsPanel';
+import { VignettePanel } from './components/Panels/VignettePanel';
+import { ToneCurvePanel } from './components/Panels/ToneCurvePanel';
 import { TransformPanel } from './components/Panels/TransformPanel';
+import { CropPanel } from './components/Panels/CropPanel';
+import { BatchPanel } from './components/Panels/BatchPanel';
 import { ExportPanel } from './components/Panels/ExportPanel';
 import { AIPanel } from './components/Panels/AIPanel';
 import { PresetList } from './components/Preset/PresetList';
 import { UploadScreen } from './components/UI/UploadScreen';
 import { useEditHistory } from './hooks/useEditHistory';
 import { usePresets } from './hooks/usePresets';
-import { DEFAULT_PARAMS, Preset, ExportSettings } from './types/editor';
+import { DEFAULT_PARAMS, Preset, ExportSettings, CropState } from './types/editor';
 import { WebGLEngine } from './utils/webgl';
 import { readExif, PhotoMetadata, formatMetadataSummary } from './utils/exif';
 
@@ -23,8 +28,10 @@ function App() {
   const [metadata, setMetadata] = useState<PhotoMetadata | null>(null);
   const [showOriginal, setShowOriginal] = useState(false);
   const [exportSettings, setExportSettings] = useState<ExportSettings>({ format: 'jpeg', quality: 85, maxLongEdge: null });
+  const [crop, setCrop] = useState<CropState | null>(null);
   const engineRef = useRef<WebGLEngine | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const canvasContainerRef = useRef<HTMLDivElement>(null);
 
   const { params, setParams, undo, redo, canUndo, canRedo, reset } = useEditHistory();
   const { allPresets, savePreset, deletePreset, exportPresets, importPresets } = usePresets();
@@ -41,20 +48,22 @@ function App() {
         if (e.key === 'z' && e.shiftKey) { e.preventDefault(); redo(); }
         if (e.key === 'o') { e.preventDefault(); fileInputRef.current?.click(); }
       }
+      // Escape to cancel crop
+      if (e.key === 'Escape' && crop) {
+        setCrop(null);
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [undo, redo]);
+  }, [undo, redo, crop]);
 
   const handleFileOpen = useCallback(async (files: FileList | File[]) => {
     const file = files[0];
     if (!file) return;
 
-    // Read EXIF metadata from the original file
     const exifData = await readExif(file);
     setMetadata(exifData);
 
-    // Read file as data URL for AI analysis
     const reader = new FileReader();
     reader.onload = () => setImageDataUrl(reader.result as string);
     reader.readAsDataURL(file);
@@ -75,12 +84,14 @@ function App() {
           setImage(resizedImg);
           setImageInfo({ name: file.name, width: img.width, height: img.height });
           reset();
+          setCrop(null);
         };
         resizedImg.src = canvas.toDataURL();
       } else {
         setImage(img);
         setImageInfo({ name: file.name, width: img.width, height: img.height });
         reset();
+        setCrop(null);
       }
       URL.revokeObjectURL(img.src);
     };
@@ -160,6 +171,8 @@ function App() {
         splitToning: p.splitToning ? { ...next.splitToning, ...p.splitToning } : next.splitToning,
         grain: p.grain ? { ...next.grain, ...p.grain } : next.grain,
         selectiveColor: p.selectiveColor ? { ...next.selectiveColor, ...p.selectiveColor } : next.selectiveColor,
+        vignette: p.vignette ? { ...next.vignette, ...p.vignette } : next.vignette,
+        toneCurve: p.toneCurve ? { ...next.toneCurve, ...p.toneCurve } : next.toneCurve,
         rotation: prev.rotation,
         flipH: prev.flipH,
         flipV: prev.flipV,
@@ -173,6 +186,33 @@ function App() {
     const desc = prompt('설명 (선택):') || '';
     savePreset({ name, description: desc, params });
   }, [params, savePreset]);
+
+  // Crop apply: re-render the canvas with cropped image
+  const handleCropApply = useCallback(() => {
+    if (!crop || !image) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = crop.width;
+    canvas.height = crop.height;
+    const ctx = canvas.getContext('2d')!;
+    ctx.drawImage(image, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height);
+
+    const croppedImg = new Image();
+    croppedImg.onload = () => {
+      setImage(croppedImg);
+      if (imageInfo) {
+        setImageInfo({ ...imageInfo, width: crop.width, height: crop.height });
+      }
+      setCrop(null);
+    };
+    croppedImg.src = canvas.toDataURL();
+  }, [crop, image, imageInfo]);
+
+  const handleCropCancel = useCallback(() => {
+    setCrop(null);
+  }, []);
+
+  // Get canvas element for crop overlay positioning
+  const canvasEl = canvasContainerRef.current?.querySelector('canvas') ?? null;
 
   return (
     <div
@@ -245,18 +285,30 @@ function App() {
 
       {/* Main Area */}
       <div className="flex flex-1 overflow-hidden relative">
-        {/* Canvas (always mounted) + Upload Screen */}
-        <WebGLCanvas
-          image={image}
-          params={params}
-          showOriginal={showOriginal}
-          onEngineReady={handleEngineReady}
-        />
-        {!image && (
-          <div className="absolute inset-0 z-10">
-            <UploadScreen onFileSelect={handleFileOpen} />
-          </div>
-        )}
+        {/* Canvas + Crop Overlay */}
+        <div ref={canvasContainerRef} className="flex-1 relative overflow-hidden">
+          <WebGLCanvas
+            image={image}
+            params={params}
+            showOriginal={showOriginal}
+            onEngineReady={handleEngineReady}
+          />
+          {!image && (
+            <div className="absolute inset-0 z-10">
+              <UploadScreen onFileSelect={handleFileOpen} />
+            </div>
+          )}
+          {crop && image && (
+            <CropOverlay
+              crop={crop}
+              imageSize={{ width: image.width, height: image.height }}
+              canvasEl={canvasEl}
+              onChange={setCrop}
+              onApply={handleCropApply}
+              onCancel={handleCropCancel}
+            />
+          )}
+        </div>
 
         {/* Right Panel */}
         <div className="w-64 bg-panel border-l border-border overflow-y-auto shrink-0">
@@ -269,10 +321,19 @@ function App() {
           />
           <BasicAdjustments params={params} onChange={setParams} />
           <ColorAdjustments params={params} onChange={setParams} />
+          <ToneCurvePanel params={params} onChange={setParams} />
           <HSLPanel params={params} onChange={setParams} />
           <SplitToningPanel params={params} onChange={setParams} />
           <EffectsPanel params={params} onChange={setParams} />
+          <VignettePanel params={params} onChange={setParams} />
           <TransformPanel params={params} onChange={setParams} />
+          <CropPanel
+            crop={crop}
+            onCropChange={setCrop}
+            onApply={handleCropApply}
+            onCancel={handleCropCancel}
+            imageSize={image ? { width: image.width, height: image.height } : null}
+          />
           <PresetList
             presets={allPresets}
             onApply={handleApplyPreset}
@@ -280,6 +341,10 @@ function App() {
             onSave={handleSavePreset}
             onExport={exportPresets}
             onImport={importPresets}
+          />
+          <BatchPanel
+            params={params}
+            exportSettings={exportSettings}
           />
           <ExportPanel
             exportSettings={exportSettings}

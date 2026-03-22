@@ -1,9 +1,12 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { EditParams, DEFAULT_PARAMS } from '../../types/editor';
 import { PhotoMetadata, formatMetadataSummary } from '../../utils/exif';
 import { analyzeAndEdit, getApiKey, setApiKey, clearApiKey } from '../../utils/autoEdit';
 import { analyzeLocal } from '../../utils/localAutoEdit';
-import { analyzeWithOllama, getOllamaUrl, setOllamaUrl, getOllamaModel, setOllamaModel } from '../../utils/ollamaAutoEdit';
+import {
+  analyzeWithOllama, getOllamaUrl, setOllamaUrl, getOllamaModel, setOllamaModel,
+  checkOllamaStatus, pullOllamaModel, OllamaStatus,
+} from '../../utils/ollamaAutoEdit';
 import { PanelSection } from '../UI/PanelSection';
 
 interface Props {
@@ -33,6 +36,10 @@ function applyResult(
       ? { ...DEFAULT_PARAMS.grain, ...result.params.grain }
       : DEFAULT_PARAMS.grain,
     selectiveColor: DEFAULT_PARAMS.selectiveColor,
+    vignette: result.params.vignette
+      ? { ...DEFAULT_PARAMS.vignette, ...result.params.vignette }
+      : DEFAULT_PARAMS.vignette,
+    toneCurve: DEFAULT_PARAMS.toneCurve,
     rotation: currentParams.rotation,
     flipH: currentParams.flipH,
     flipV: currentParams.flipV,
@@ -55,6 +62,11 @@ export function AIPanel({ params, onChange, metadata, imageDataUrl, imageLoaded 
   const [ollamaError, setOllamaError] = useState('');
   const [ollamaUrlInput, setOllamaUrlInput] = useState(getOllamaUrl());
   const [ollamaModelInput, setOllamaModelInput] = useState(getOllamaModel());
+  const [ollamaConnStatus, setOllamaConnStatus] = useState<OllamaStatus | null>(null);
+  const [ollamaChecking, setOllamaChecking] = useState(false);
+  const [ollamaPulling, setOllamaPulling] = useState(false);
+  const [ollamaPullStatus, setOllamaPullStatus] = useState('');
+  const [showOllamaSetup, setShowOllamaSetup] = useState(false);
 
   // API state
   const [apiKey, setApiKeyState] = useState(getApiKey() || '');
@@ -70,6 +82,42 @@ export function AIPanel({ params, onChange, metadata, imageDataUrl, imageLoaded 
       setShowKeyInput(false);
     }
   };
+
+  // Check Ollama connection when tab opens
+  const checkOllama = useCallback(async () => {
+    setOllamaChecking(true);
+    setOllamaUrl(ollamaUrlInput);
+    const status = await checkOllamaStatus();
+    setOllamaConnStatus(status);
+    setOllamaChecking(false);
+    if (!status.connected) setShowOllamaSetup(true);
+  }, [ollamaUrlInput]);
+
+  useEffect(() => {
+    if (tab === 'ollama' && !ollamaConnStatus) {
+      checkOllama();
+    }
+  }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handlePullModel = async (model: string) => {
+    setOllamaPulling(true);
+    setOllamaPullStatus('');
+    setOllamaError('');
+    try {
+      await pullOllamaModel(model, setOllamaPullStatus);
+      setOllamaModelInput(model);
+      setOllamaModel(model);
+      // Refresh status
+      const status = await checkOllamaStatus();
+      setOllamaConnStatus(status);
+    } catch (err) {
+      setOllamaError(err instanceof Error ? err.message : '다운로드 실패');
+    } finally {
+      setOllamaPulling(false);
+    }
+  };
+
+  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
   // --- Local ---
   const handleLocalEdit = async () => {
@@ -206,40 +254,166 @@ export function AIPanel({ params, onChange, metadata, imageDataUrl, imageLoaded 
       {/* ===== Ollama tab ===== */}
       {tab === 'ollama' && (
         <>
-          <div className="flex flex-col gap-1.5">
-            <div className="flex gap-1.5">
-              <input
-                type="text"
-                value={ollamaUrlInput}
-                onChange={e => setOllamaUrlInput(e.target.value)}
-                className="flex-1 bg-panel-light text-text-primary text-[10px] rounded px-2 py-1 border border-border focus:border-emerald-500 outline-none"
-                placeholder="http://localhost:11434"
-              />
-            </div>
-            <div className="flex gap-1.5 items-center">
-              <span className="text-[10px] text-text-secondary shrink-0">모델:</span>
-              <input
-                type="text"
-                value={ollamaModelInput}
-                onChange={e => setOllamaModelInput(e.target.value)}
-                className="flex-1 bg-panel-light text-text-primary text-[10px] rounded px-2 py-1 border border-border focus:border-emerald-500 outline-none"
-                placeholder="llava"
-              />
-            </div>
+          {/* Connection status */}
+          <div className="flex items-center gap-1.5">
+            <div className={`w-2 h-2 rounded-full ${
+              ollamaChecking ? 'bg-yellow-400 animate-pulse' :
+              ollamaConnStatus?.connected ? 'bg-emerald-400' : 'bg-red-400'
+            }`} />
+            <span className="text-[10px] text-text-secondary flex-1">
+              {ollamaChecking ? '연결 확인 중...' :
+               ollamaConnStatus?.connected
+                 ? `연결됨 · 모델 ${ollamaConnStatus.models.length}개`
+                 : 'Ollama 미연결'}
+            </span>
+            <button
+              onClick={checkOllama}
+              disabled={ollamaChecking}
+              className="text-[10px] text-text-secondary hover:text-emerald-400 transition-colors"
+            >
+              재확인
+            </button>
           </div>
 
-          <button
-            onClick={handleOllamaEdit}
-            disabled={ollamaLoading || !imageLoaded}
-            className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {ollamaLoading ? (
-              <span className="flex items-center justify-center gap-2">
-                <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                {ollamaStatus}
-              </span>
-            ) : 'LLM 분석 + 자동편집'}
-          </button>
+          {/* Mobile warning */}
+          {isMobile && (
+            <div className="text-[10px] text-yellow-400 bg-yellow-400/10 rounded px-2 py-1.5 leading-relaxed">
+              모바일에서는 로컬 LLM을 실행할 수 없습니다. PC에서 Ollama를 설치하거나, &ldquo;자동보정&rdquo; 탭의 로컬 분석을 이용하세요.
+            </div>
+          )}
+
+          {/* Setup guide (when not connected) */}
+          {!ollamaConnStatus?.connected && showOllamaSetup && !isMobile && (
+            <div className="flex flex-col gap-2 bg-panel-light rounded-lg p-2.5">
+              <div className="text-[10px] text-emerald-400 font-medium">Ollama 설치 가이드</div>
+              <div className="text-[10px] text-text-secondary leading-relaxed">
+                AI 사진 분석을 로컬에서 무료로 실행하려면 Ollama를 설치하세요.
+              </div>
+              <a
+                href="https://ollama.com/download"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded-lg transition-all text-center block"
+              >
+                Ollama 다운로드 (무료)
+              </a>
+              <div className="text-[10px] text-text-secondary leading-relaxed">
+                1. 위 버튼으로 Ollama 설치<br/>
+                2. 설치 후 아래 &ldquo;연결 확인&rdquo; 클릭<br/>
+                3. 비전 모델 설치 (아래 버튼 클릭)
+              </div>
+              <div className="flex gap-1.5">
+                <input
+                  type="text"
+                  value={ollamaUrlInput}
+                  onChange={e => setOllamaUrlInput(e.target.value)}
+                  className="flex-1 bg-surface text-text-primary text-[10px] rounded px-2 py-1 border border-border focus:border-emerald-500 outline-none"
+                  placeholder="http://localhost:11434"
+                />
+                <button
+                  onClick={checkOllama}
+                  className="text-[10px] bg-surface hover:bg-border text-text-secondary px-2 py-1 rounded transition-colors"
+                >
+                  연결 확인
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Connected: model install + analysis */}
+          {ollamaConnStatus?.connected && (
+            <>
+              {/* Model selector + install */}
+              <div className="flex flex-col gap-1.5">
+                <div className="flex gap-1.5 items-center">
+                  <span className="text-[10px] text-text-secondary shrink-0">모델:</span>
+                  <select
+                    value={ollamaModelInput}
+                    onChange={e => { setOllamaModelInput(e.target.value); setOllamaModel(e.target.value); }}
+                    className="flex-1 bg-panel-light text-text-primary text-[10px] rounded px-2 py-1 border border-border focus:border-emerald-500 outline-none"
+                  >
+                    {ollamaConnStatus.models.length > 0 ? (
+                      ollamaConnStatus.models.map(m => (
+                        <option key={m} value={m}>{m}</option>
+                      ))
+                    ) : (
+                      <option value="">모델 없음</option>
+                    )}
+                  </select>
+                </div>
+
+                {/* Quick model install buttons */}
+                {!ollamaConnStatus.models.some(m => m.includes('llava') || m.includes('moondream')) && (
+                  <div className="bg-panel-light rounded-lg p-2 flex flex-col gap-1.5">
+                    <div className="text-[10px] text-yellow-400">비전 모델이 설치되지 않았습니다</div>
+                    <div className="text-[10px] text-text-secondary">사진 분석에는 비전 모델이 필요합니다. 아래에서 설치하세요.</div>
+                  </div>
+                )}
+
+                <div className="flex flex-col gap-1.5">
+                  <div className="text-[10px] text-emerald-400 font-medium">AI 비전 모델 설치</div>
+                  <div className="flex flex-col gap-1.5">
+                    {[
+                      { name: 'moondream', size: '~1.7GB', desc: '빠름, 가벼움 (추천)' },
+                      { name: 'llava:7b', size: '~4.7GB', desc: '균형잡힌 성능' },
+                      { name: 'llava:13b', size: '~8GB', desc: '고품질 분석' },
+                      { name: 'llava-llama3', size: '~5.5GB', desc: '최신 모델' },
+                    ].map(m => {
+                      const installed = ollamaConnStatus.models.some(im => im.includes(m.name.split(':')[0]));
+                      return (
+                        <button
+                          key={m.name}
+                          onClick={() => {
+                            if (!installed && !ollamaPulling) {
+                              if (confirm(`${m.name} (${m.size})을 다운로드하시겠습니까?\n\n${m.desc}\n용량: ${m.size}\n다운로드에 시간이 걸릴 수 있습니다.`)) {
+                                handlePullModel(m.name);
+                              }
+                            }
+                          }}
+                          disabled={installed || ollamaPulling}
+                          className={`w-full flex items-center justify-between py-2 px-3 rounded-lg transition-colors ${
+                            installed
+                              ? 'bg-emerald-600/20 text-emerald-400 cursor-default'
+                              : 'bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer'
+                          } disabled:opacity-60`}
+                        >
+                          <div className="flex flex-col items-start">
+                            <div className="text-xs font-medium">{m.name}</div>
+                            <div className="text-[10px] opacity-80">{m.desc} · {m.size}</div>
+                          </div>
+                          <div className="text-xs font-medium shrink-0 ml-2">
+                            {installed ? '✓ 설치됨' : '설치'}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Pull progress */}
+                {ollamaPulling && (
+                  <div className="flex items-center gap-2 text-[10px] text-emerald-400">
+                    <span className="w-3 h-3 border-2 border-emerald-400/30 border-t-emerald-400 rounded-full animate-spin" />
+                    {ollamaPullStatus}
+                  </div>
+                )}
+              </div>
+
+              {/* Analysis button */}
+              <button
+                onClick={handleOllamaEdit}
+                disabled={ollamaLoading || !imageLoaded || ollamaConnStatus.models.length === 0}
+                className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {ollamaLoading ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    {ollamaStatus}
+                  </span>
+                ) : 'LLM 분석 + 자동편집'}
+              </button>
+            </>
+          )}
 
           {ollamaError && (
             <div className="text-[10px] text-red-400 bg-red-400/10 rounded px-2 py-1.5">{ollamaError}</div>
@@ -258,9 +432,6 @@ export function AIPanel({ params, onChange, metadata, imageDataUrl, imageLoaded 
               </div>
             </div>
           )}
-          <div className="text-[10px] text-text-secondary leading-relaxed">
-            Ollama 비전 모델로 피사체를 분석합니다. 추천: llava, llava-llama3, moondream2
-          </div>
         </>
       )}
 

@@ -36,6 +36,20 @@ export interface SelectiveColor {
   desaturateStrength: number;
 }
 
+export interface Vignette {
+  amount: number;     // 0-100 (darkening strength)
+  midpoint: number;   // 0-100 (where vignette starts, 50 = halfway)
+  roundness: number;  // -100 to 100 (negative=more oval, positive=more round)
+  feather: number;    // 0-100 (edge softness)
+}
+
+export interface ToneCurve {
+  rgb: Array<{ x: number; y: number }>;     // master curve control points
+  red: Array<{ x: number; y: number }>;     // red channel
+  green: Array<{ x: number; y: number }>;   // green channel
+  blue: Array<{ x: number; y: number }>;    // blue channel
+}
+
 export interface CropState {
   x: number;
   y: number;
@@ -63,6 +77,8 @@ export interface EditParams {
   clarity: number;
   grain: Grain;
   selectiveColor: SelectiveColor;
+  vignette: Vignette;
+  toneCurve: ToneCurve;
   rotation: number; // 0, 90, 180, 270
   flipH: boolean;
   flipV: boolean;
@@ -92,6 +108,13 @@ export const DEFAULT_PARAMS: EditParams = {
   clarity: 0,
   grain: { amount: 0, size: 50 },
   selectiveColor: { enabled: false, preserveHueRanges: [], desaturateStrength: 0 },
+  vignette: { amount: 0, midpoint: 50, roundness: 0, feather: 60 },
+  toneCurve: {
+    rgb: [{ x: 0, y: 0 }, { x: 255, y: 255 }],
+    red: [{ x: 0, y: 0 }, { x: 255, y: 255 }],
+    green: [{ x: 0, y: 0 }, { x: 255, y: 255 }],
+    blue: [{ x: 0, y: 0 }, { x: 255, y: 255 }],
+  },
   rotation: 0,
   flipH: false,
   flipV: false,

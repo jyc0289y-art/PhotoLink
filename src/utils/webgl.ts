@@ -7,7 +7,9 @@ import clarityBlurVFrag from '../shaders/clarityBlurV.frag?raw';
 import clarityApplyFrag from '../shaders/clarityApply.frag?raw';
 import grainFrag from '../shaders/grain.frag?raw';
 import selectiveColorFrag from '../shaders/selectiveColor.frag?raw';
-import { EditParams } from '../types/editor';
+import vignetteFrag from '../shaders/vignette.frag?raw';
+import toneCurveFrag from '../shaders/toneCurve.frag?raw';
+import { EditParams, ToneCurve } from '../types/editor';
 import { colorTempToRGB } from './colorTemp';
 
 interface ShaderProgram {
@@ -26,6 +28,7 @@ export class WebGLEngine {
   private fboTextures: WebGLTexture[] = [];
   private imageWidth = 0;
   private imageHeight = 0;
+  private curveLUTTexture: WebGLTexture | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -122,6 +125,14 @@ export class WebGLEngine {
     this.programs.selectiveColor = this.createProgram(selectiveColorFrag, [
       'uTexture', 'uNumRanges', 'uDesaturateStrength',
       ...Array.from({ length: 8 }, (_, i) => `uHueRanges[${i}]`),
+    ]);
+
+    this.programs.vignette = this.createProgram(vignetteFrag, [
+      'uTexture', 'uAmount', 'uMidpoint', 'uRoundness', 'uFeather',
+    ]);
+
+    this.programs.toneCurve = this.createProgram(toneCurveFrag, [
+      'uTexture', 'uCurveLUT',
     ]);
   }
 
@@ -268,31 +279,14 @@ export class WebGLEngine {
 
     // Pass 4: Clarity (multi-pass blur + unsharp mask)
     if (params.clarity !== 0) {
-      const beforeClarityTexture = currentTexture;
       const radius = Math.abs(params.clarity) * 0.5 + 5;
 
-      // Horizontal blur
-      const blurHProg = this.programs.clarityBlurH;
-      renderPass(blurHProg, () => {
-        gl.uniform2f(blurHProg.uniforms['uResolution'], this.imageWidth, this.imageHeight);
-        gl.uniform1f(blurHProg.uniforms['uRadius'], radius);
-      });
-
-      // Vertical blur
-      const blurVProg = this.programs.clarityBlurV;
-      renderPass(blurVProg, () => {
-        gl.uniform2f(blurVProg.uniforms['uResolution'], this.imageWidth, this.imageHeight);
-        gl.uniform1f(blurVProg.uniforms['uRadius'], radius);
-      });
-
-      // Store blurred result in fbo[2]
-      const blurredTexture = currentTexture;
+      // STEP 1: Copy pre-clarity image to fbo[2] BEFORE blur (prevents ping-pong overwrite)
+      const copyProg = this.programs.basic;
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbos[2]);
       gl.viewport(0, 0, this.imageWidth, this.imageHeight);
-      // Copy blurred to fbo[2]
-      const copyProg = this.programs.basic;
       gl.useProgram(copyProg.program);
-      this.bindTexture(0, blurredTexture);
+      this.bindTexture(0, currentTexture);
       gl.uniform1i(copyProg.uniforms['uTexture'], 0);
       gl.uniform1f(copyProg.uniforms['uExposure'], 0);
       gl.uniform1f(copyProg.uniforms['uContrast'], 0);
@@ -302,16 +296,33 @@ export class WebGLEngine {
       gl.uniform1f(copyProg.uniforms['uSaturation'], 0);
       gl.uniform1f(copyProg.uniforms['uVibrance'], 0);
       this.drawQuad(copyProg);
+      // fboTex[2] now holds the original (pre-clarity) image
 
-      // Apply clarity: original + clarity * (original - blurred)
-      currentTexture = beforeClarityTexture;
+      // STEP 2: Horizontal blur
+      const blurHProg = this.programs.clarityBlurH;
+      renderPass(blurHProg, () => {
+        gl.uniform2f(blurHProg.uniforms['uResolution'], this.imageWidth, this.imageHeight);
+        gl.uniform1f(blurHProg.uniforms['uRadius'], radius);
+      });
+
+      // STEP 3: Vertical blur (result = fully blurred image in ping-pong buffer)
+      const blurVProg = this.programs.clarityBlurV;
+      renderPass(blurVProg, () => {
+        gl.uniform2f(blurVProg.uniforms['uResolution'], this.imageWidth, this.imageHeight);
+        gl.uniform1f(blurVProg.uniforms['uRadius'], radius);
+      });
+      // currentTexture now points to blurred result
+
+      // STEP 4: Apply clarity: original + clarity * (original - blurred)
+      // original = fboTex[2], blurred = currentTexture
+      const blurredTexture = currentTexture;
       const clarityProg = this.programs.clarityApply;
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbos[fboIndex]);
       gl.viewport(0, 0, this.imageWidth, this.imageHeight);
       gl.useProgram(clarityProg.program);
-      this.bindTexture(0, beforeClarityTexture);
+      this.bindTexture(0, this.fboTextures[2]); // original (preserved in fbo[2])
       gl.uniform1i(clarityProg.uniforms['uTexture'], 0);
-      this.bindTexture(1, this.fboTextures[2]);
+      this.bindTexture(1, blurredTexture);       // blurred
       gl.uniform1i(clarityProg.uniforms['uBlurred'], 1);
       gl.uniform1f(clarityProg.uniforms['uClarity'], params.clarity);
       this.drawQuad(clarityProg);
@@ -336,7 +347,35 @@ export class WebGLEngine {
       });
     }
 
-    // Pass 6: Grain
+    // Pass 6: Tone Curve
+    const hasCurve = this.hasToneCurveChanges(params.toneCurve);
+    if (hasCurve) {
+      this.updateCurveLUT(params.toneCurve);
+      const tcProg = this.programs.toneCurve;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbos[fboIndex]);
+      gl.viewport(0, 0, this.imageWidth, this.imageHeight);
+      gl.useProgram(tcProg.program);
+      this.bindTexture(0, currentTexture);
+      gl.uniform1i(tcProg.uniforms['uTexture'], 0);
+      this.bindTexture(1, this.curveLUTTexture!);
+      gl.uniform1i(tcProg.uniforms['uCurveLUT'], 1);
+      this.drawQuad(tcProg);
+      currentTexture = this.fboTextures[fboIndex];
+      fboIndex = (fboIndex + 1) % 2;
+    }
+
+    // Pass 7: Vignette
+    if (params.vignette.amount > 0) {
+      const vigProg = this.programs.vignette;
+      renderPass(vigProg, () => {
+        gl.uniform1f(vigProg.uniforms['uAmount'], params.vignette.amount / 100);
+        gl.uniform1f(vigProg.uniforms['uMidpoint'], params.vignette.midpoint / 100);
+        gl.uniform1f(vigProg.uniforms['uRoundness'], params.vignette.roundness / 100);
+        gl.uniform1f(vigProg.uniforms['uFeather'], params.vignette.feather / 100);
+      });
+    }
+
+    // Pass 8: Grain
     if (params.grain.amount > 0) {
       const grainProg = this.programs.grain;
       const isLastPass = true;
@@ -369,11 +408,110 @@ export class WebGLEngine {
     return this.canvas;
   }
 
+  private hasToneCurveChanges(tc: ToneCurve): boolean {
+    const isDefault = (pts: Array<{ x: number; y: number }>) =>
+      pts.length === 2 && pts[0].x === 0 && pts[0].y === 0 && pts[1].x === 255 && pts[1].y === 255;
+    return !isDefault(tc.rgb) || !isDefault(tc.red) || !isDefault(tc.green) || !isDefault(tc.blue);
+  }
+
+  private updateCurveLUT(tc: ToneCurve) {
+    const gl = this.gl;
+    // Generate 256-entry LUT: RGBA = master, red, green, blue
+    const data = new Uint8Array(256 * 4);
+    const masterLUT = this.interpolateCurve(tc.rgb);
+    const redLUT = this.interpolateCurve(tc.red);
+    const greenLUT = this.interpolateCurve(tc.green);
+    const blueLUT = this.interpolateCurve(tc.blue);
+    for (let i = 0; i < 256; i++) {
+      data[i * 4 + 0] = masterLUT[i];  // R = master curve
+      data[i * 4 + 1] = redLUT[i];     // G = red curve
+      data[i * 4 + 2] = greenLUT[i];   // B = green curve
+      data[i * 4 + 3] = blueLUT[i];    // A = blue curve
+    }
+
+    if (!this.curveLUTTexture) {
+      this.curveLUTTexture = gl.createTexture()!;
+    }
+    gl.bindTexture(gl.TEXTURE_2D, this.curveLUTTexture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  }
+
+  private interpolateCurve(points: Array<{ x: number; y: number }>): Uint8Array {
+    const lut = new Uint8Array(256);
+    if (points.length < 2) {
+      for (let i = 0; i < 256; i++) lut[i] = i;
+      return lut;
+    }
+    // Sort points by x
+    const sorted = [...points].sort((a, b) => a.x - b.x);
+
+    // Monotone cubic spline interpolation
+    const n = sorted.length;
+    const xs = sorted.map(p => p.x);
+    const ys = sorted.map(p => p.y);
+
+    // Compute slopes
+    const dxs: number[] = [];
+    const dys: number[] = [];
+    const ms: number[] = [];
+    for (let i = 0; i < n - 1; i++) {
+      dxs.push(xs[i + 1] - xs[i]);
+      dys.push(ys[i + 1] - ys[i]);
+      ms.push(dys[i] / Math.max(dxs[i], 0.001));
+    }
+
+    // Tangents (Fritsch-Carlson)
+    const c1s = [ms[0]];
+    for (let i = 0; i < dxs.length - 1; i++) {
+      if (ms[i] * ms[i + 1] <= 0) {
+        c1s.push(0);
+      } else {
+        const common = dxs[i] + dxs[i + 1];
+        c1s.push(3 * common / ((common + dxs[i + 1]) / ms[i] + (common + dxs[i]) / ms[i + 1]));
+      }
+    }
+    c1s.push(ms[ms.length - 1]);
+
+    // Hermite coefficients
+    const c2s: number[] = [];
+    const c3s: number[] = [];
+    for (let i = 0; i < c1s.length - 1; i++) {
+      const invDx = 1 / Math.max(dxs[i], 0.001);
+      const common = c1s[i] + c1s[i + 1] - 2 * ms[i];
+      c2s.push((ms[i] - c1s[i] - common) * invDx);
+      c3s.push(common * invDx * invDx);
+    }
+
+    for (let x = 0; x < 256; x++) {
+      if (x <= xs[0]) {
+        lut[x] = Math.round(Math.max(0, Math.min(255, ys[0])));
+      } else if (x >= xs[n - 1]) {
+        lut[x] = Math.round(Math.max(0, Math.min(255, ys[n - 1])));
+      } else {
+        // Find segment
+        let seg = n - 2;
+        for (let i = 0; i < n - 1; i++) {
+          if (x < xs[i + 1]) { seg = i; break; }
+        }
+        const diff = x - xs[seg];
+        const val = ys[seg] + c1s[seg] * diff + c2s[seg] * diff * diff + c3s[seg] * diff * diff * diff;
+        lut[x] = Math.round(Math.max(0, Math.min(255, val)));
+      }
+    }
+    return lut;
+  }
+
   destroy() {
     const gl = this.gl;
     this.cleanupFBOs();
     if (this.sourceTexture) gl.deleteTexture(this.sourceTexture);
     this.sourceTexture = null;
+    if (this.curveLUTTexture) gl.deleteTexture(this.curveLUTTexture);
+    this.curveLUTTexture = null;
     for (const prog of Object.values(this.programs)) {
       gl.deleteProgram(prog.program);
     }

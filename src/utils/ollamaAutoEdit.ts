@@ -17,6 +17,65 @@ export function setOllamaModel(model: string) {
   localStorage.setItem(OLLAMA_MODEL_KEY, model);
 }
 
+export interface OllamaStatus {
+  connected: boolean;
+  models: string[];
+  error?: string;
+}
+
+export async function checkOllamaStatus(): Promise<OllamaStatus> {
+  const url = getOllamaUrl();
+  try {
+    const res = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) return { connected: false, models: [], error: `HTTP ${res.status}` };
+    const data = await res.json();
+    const models = (data.models || []).map((m: { name: string }) => m.name);
+    return { connected: true, models };
+  } catch {
+    return { connected: false, models: [] };
+  }
+}
+
+export async function pullOllamaModel(
+  model: string,
+  onProgress?: (status: string) => void,
+): Promise<void> {
+  const url = getOllamaUrl();
+  onProgress?.(`${model} 다운로드 시작...`);
+
+  const res = await fetch(`${url}/api/pull`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: model, stream: true }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`모델 다운로드 실패 (${res.status})`);
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error('스트림을 읽을 수 없습니다');
+
+  const decoder = new TextDecoder();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const text = decoder.decode(value);
+    for (const line of text.split('\n').filter(Boolean)) {
+      try {
+        const json = JSON.parse(line);
+        if (json.total && json.completed) {
+          const pct = Math.round((json.completed / json.total) * 100);
+          onProgress?.(`${model} 다운로드 중... ${pct}%`);
+        } else if (json.status) {
+          onProgress?.(json.status);
+        }
+      } catch { /* skip malformed lines */ }
+    }
+  }
+  onProgress?.(`${model} 설치 완료!`);
+}
+
 interface OllamaAnalysis {
   subject: string;
   mood: string;
