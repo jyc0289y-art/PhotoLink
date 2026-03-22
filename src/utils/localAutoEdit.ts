@@ -236,131 +236,114 @@ function detectScene(stats: ImageStats): SceneType {
 function generateParams(stats: ImageStats, scene: SceneType): Partial<EditParams> {
   const params: Partial<EditParams> = {};
 
-  // Scene-specific brightness targets
+  // Conservative brightness targets — preserve original feel, only correct obvious issues
   const targetBrightness: Record<SceneType, number> = {
-    portrait: 125,    // slightly brighter for flattering skin
-    landscape: 115,   // natural, not too bright
-    night: 75,        // preserve mood, don't over-brighten
-    backlit: 110,     // moderate recovery
-    macro: 120,       // clean, well-lit
-    general: 118,
+    portrait: 118,    // gentle lift only
+    landscape: 112,   // natural
+    night: 65,        // preserve mood
+    backlit: 105,     // moderate recovery
+    macro: 115,       // clean
+    general: 112,     // subtle — don't over-brighten
   };
 
-  // --- Exposure correction ---
+  // --- Exposure correction (conservative: only fix clearly under/over-exposed) ---
   const target = targetBrightness[scene];
   const brightnessDelta = target - stats.avgBrightness;
   if (scene === 'night') {
-    // Night: gentle exposure lift only, preserve atmosphere
-    if (brightnessDelta > 10) {
-      params.exposure = clamp(brightnessDelta / 60, 0.2, 1.0);
+    if (brightnessDelta > 15) {
+      params.exposure = clamp(brightnessDelta / 80, 0.1, 0.6);
     }
   } else if (scene === 'backlit') {
-    // Backlit: moderate lift + strong shadow recovery
-    params.exposure = clamp(brightnessDelta / 35, -1.0, 1.5);
+    params.exposure = clamp(brightnessDelta / 50, -0.5, 1.0);
   } else {
-    if (Math.abs(brightnessDelta) > 5) {
-      params.exposure = clamp(brightnessDelta / 40, -2.0, 2.0);
+    // Only correct if noticeably off (>10 brightness delta)
+    if (Math.abs(brightnessDelta) > 10) {
+      params.exposure = clamp(brightnessDelta / 60, -1.0, 1.0);
     }
   }
 
-  // --- Contrast ---
+  // --- Contrast (subtle: preserve texture and detail) ---
   const contrastTargets: Record<SceneType, { low: number; high: number; gain: number }> = {
-    portrait: { low: 55, high: 75, gain: 0.8 },   // softer contrast for skin
-    landscape: { low: 58, high: 85, gain: 1.4 },   // punchy landscapes
-    night: { low: 50, high: 90, gain: 0.6 },       // gentle, preserve mood
-    backlit: { low: 55, high: 80, gain: 1.0 },
-    macro: { low: 60, high: 80, gain: 1.0 },
-    general: { low: 60, high: 80, gain: 1.2 },
+    portrait: { low: 50, high: 80, gain: 0.5 },
+    landscape: { low: 55, high: 85, gain: 0.8 },
+    night: { low: 45, high: 90, gain: 0.4 },
+    backlit: { low: 50, high: 80, gain: 0.6 },
+    macro: { low: 55, high: 80, gain: 0.6 },
+    general: { low: 55, high: 80, gain: 0.6 },
   };
   const ct = contrastTargets[scene];
   if (stats.brightnessStdDev < ct.low) {
-    params.contrast = clamp(Math.round((ct.low + 5 - stats.brightnessStdDev) * ct.gain), 5, 50);
+    params.contrast = clamp(Math.round((ct.low - stats.brightnessStdDev) * ct.gain), 3, 25);
   } else if (stats.brightnessStdDev > ct.high) {
-    params.contrast = clamp(Math.round((65 - stats.brightnessStdDev) * 0.6), -30, -5);
+    params.contrast = clamp(Math.round((70 - stats.brightnessStdDev) * 0.4), -20, -3);
   }
 
-  // --- Highlights / Shadows recovery ---
+  // --- Highlights / Shadows (minimal: only recover clipped areas, preserve micro-contrast) ---
   if (scene === 'backlit') {
-    // Aggressive shadow lift for backlit subjects
-    params.highlights = clamp(Math.round(-stats.highlightClip * 3000), -80, -20);
-    params.shadows = clamp(Math.round(stats.shadowClip * 3000 + 25), 25, 80);
+    params.highlights = clamp(Math.round(-stats.highlightClip * 2000), -60, -15);
+    params.shadows = clamp(Math.round(stats.shadowClip * 2000 + 15), 15, 50);
   } else if (scene === 'night') {
-    // Night: gentle recovery, preserve contrast
-    params.highlights = stats.highlightClip > 0.01 ? clamp(Math.round(-stats.highlightClip * 2000), -50, -5) : -5;
-    params.shadows = clamp(Math.round(stats.shadowClip * 1500), 5, 35);
+    params.highlights = stats.highlightClip > 0.01 ? clamp(Math.round(-stats.highlightClip * 1500), -35, -5) : 0;
+    params.shadows = clamp(Math.round(stats.shadowClip * 1000), 0, 20);
   } else {
-    if (stats.highlightClip > 0.005) {
-      params.highlights = clamp(Math.round(-stats.highlightClip * 2500), -70, -10);
-    } else {
-      params.highlights = -10;
+    // Only recover if actually clipped — don't apply shadows lift "just because"
+    if (stats.highlightClip > 0.01) {
+      params.highlights = clamp(Math.round(-stats.highlightClip * 1500), -50, -5);
     }
-    if (stats.shadowClip > 0.005) {
-      params.shadows = clamp(Math.round(stats.shadowClip * 2500), 10, 70);
-    } else if (stats.avgBrightness < 130) {
-      params.shadows = clamp(Math.round((130 - stats.avgBrightness) * 0.4), 5, 30);
+    if (stats.shadowClip > 0.01) {
+      params.shadows = clamp(Math.round(stats.shadowClip * 1500), 5, 35);
     }
   }
 
-  // --- Color temperature ---
+  // --- Color temperature (gentle: only correct obvious color casts) ---
   const tempDiff = stats.colorTemp - 5800;
   if (scene === 'night') {
-    // Night: preserve warm tones from artificial lights, only correct extreme blue
-    if (tempDiff < -500) {
-      params.colorTemp = clamp(Math.round(5800 - tempDiff * 0.3), 4500, 7000);
+    if (tempDiff < -800) {
+      params.colorTemp = clamp(Math.round(5800 - tempDiff * 0.2), 4800, 6500);
     }
   } else if (scene === 'portrait') {
-    // Portrait: slight warm bias for flattering skin
-    if (Math.abs(tempDiff) > 200) {
-      params.colorTemp = clamp(Math.round(6000 - tempDiff * 0.4), 4000, 7500);
+    if (Math.abs(tempDiff) > 400) {
+      params.colorTemp = clamp(Math.round(5900 - tempDiff * 0.25), 4500, 7000);
     }
   } else {
-    if (Math.abs(tempDiff) > 200) {
-      params.colorTemp = clamp(Math.round(5800 - tempDiff * 0.45), 3500, 8500);
+    if (Math.abs(tempDiff) > 400) {
+      params.colorTemp = clamp(Math.round(5800 - tempDiff * 0.3), 4000, 7500);
     }
   }
 
-  // --- Saturation / Vibrance ---
+  // --- Saturation / Vibrance (restrained: enhance subtly, never over-saturate) ---
   if (scene === 'portrait') {
-    // Portrait: boost vibrance but restrain saturation to avoid oversaturated skin
-    params.vibrance = clamp(Math.round((0.35 - stats.avgSaturation) * 150), 5, 30);
-    if (stats.avgSaturation > 0.45) {
-      params.saturation = clamp(Math.round((0.4 - stats.avgSaturation) * 60), -15, 0);
-    }
+    params.vibrance = clamp(Math.round((0.3 - stats.avgSaturation) * 80), 0, 15);
   } else if (scene === 'landscape') {
-    // Landscape: boost both for vivid scenery
-    params.vibrance = clamp(Math.round((0.45 - stats.avgSaturation) * 180), 10, 45);
-    params.saturation = clamp(Math.round((0.4 - stats.avgSaturation) * 100), 0, 25);
+    params.vibrance = clamp(Math.round((0.4 - stats.avgSaturation) * 100), 5, 25);
+    params.saturation = clamp(Math.round((0.35 - stats.avgSaturation) * 50), 0, 12);
   } else if (scene === 'night') {
-    // Night: minimal saturation changes
     if (stats.avgSaturation < 0.2) {
-      params.vibrance = clamp(Math.round((0.25 - stats.avgSaturation) * 100), 5, 20);
+      params.vibrance = clamp(Math.round((0.22 - stats.avgSaturation) * 80), 3, 12);
     }
   } else {
     if (stats.avgSaturation < 0.2) {
-      params.vibrance = clamp(Math.round((0.35 - stats.avgSaturation) * 200), 15, 45);
-      params.saturation = clamp(Math.round((0.25 - stats.avgSaturation) * 120), 5, 25);
-    } else if (stats.avgSaturation < 0.4) {
-      params.vibrance = clamp(Math.round((0.4 - stats.avgSaturation) * 120), 5, 25);
-      params.saturation = clamp(Math.round((0.35 - stats.avgSaturation) * 80), 0, 15);
+      params.vibrance = clamp(Math.round((0.3 - stats.avgSaturation) * 100), 5, 20);
+      params.saturation = clamp(Math.round((0.22 - stats.avgSaturation) * 60), 0, 10);
+    } else if (stats.avgSaturation < 0.35) {
+      params.vibrance = clamp(Math.round((0.35 - stats.avgSaturation) * 60), 3, 15);
     } else if (stats.avgSaturation > 0.55) {
-      params.saturation = clamp(Math.round((0.45 - stats.avgSaturation) * 80), -25, -5);
+      params.saturation = clamp(Math.round((0.5 - stats.avgSaturation) * 50), -15, -3);
     }
   }
 
-  // --- Clarity ---
+  // --- Clarity (conservative: preserve texture, avoid washing out fine detail) ---
   if (scene === 'portrait') {
-    // Portrait: gentle clarity, never negative (negative causes blur/softening)
-    params.clarity = clamp(Math.round((0.8 - stats.dynamicRange) * 15), 0, 15);
+    params.clarity = clamp(Math.round((0.75 - stats.dynamicRange) * 10), 0, 8);
   } else if (scene === 'landscape') {
-    // Landscape: higher clarity for detail
-    params.clarity = clamp(Math.round((0.9 - stats.dynamicRange) * 80), 15, 45);
+    params.clarity = clamp(Math.round((0.85 - stats.dynamicRange) * 40), 8, 25);
   } else if (scene === 'night') {
-    params.clarity = clamp(Math.round((0.8 - stats.dynamicRange) * 30), 0, 15);
+    params.clarity = clamp(Math.round((0.75 - stats.dynamicRange) * 15), 0, 10);
   } else {
     if (stats.dynamicRange < 0.8) {
-      params.clarity = clamp(Math.round((0.85 - stats.dynamicRange) * 60), 8, 30);
+      params.clarity = clamp(Math.round((0.8 - stats.dynamicRange) * 30), 5, 18);
     } else {
-      params.clarity = 8;
+      params.clarity = 5;
     }
   }
 
